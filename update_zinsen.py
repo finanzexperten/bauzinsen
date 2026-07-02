@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Ruft die aktuelle EZB-Renditekurve (AAA-Staatsanleihen Euroraum) ab und
-rechnet daraus Richtwerte fuer Bauzinsen je Zinsbindung. Ergebnis: bauzinsen.json
+Ruft die aktuelle EZB-Renditekurve (AAA-Staatsanleihen Euroraum, 10 Jahre) ab
+und rechnet daraus Richtwerte fuer Bauzinsen je Zinsbindung. Ergebnis: bauzinsen.json
 Nur Python-Standardbibliothek. Wird von GitHub Actions taeglich ausgefuehrt.
 
->>> EINZIGE STELLSCHRAUBE FUER LAIEN: SPREAD unten. <<<
-SPREAD = Aufschlag in Prozentpunkten von der Staatsanleihen-Rendite auf den
-effektiven Bauzins (bei 60 % Beleihung, sehr gute Bonitaet).
+MODELL: Anker ist die 10-Jahres-Rendite. Der effektive Bauzins fuer 10 Jahre =
+10J-Rendite + BASE_SPREAD. Andere Bindungen bekommen einen festen Zu-/Abschlag
+(TERM) obendrauf. So bleibt die Zinskurve realistisch, egal wie steil die
+Staatsanleihen-Kurve gerade ist.
+
+>>> STELLSCHRAUBEN FUER LAIEN <<<
+- BASE_SPREAD  : verschiebt ALLE Zinsen nach oben/unten (Euer Top-Zins-Niveau).
+- TERM         : Kurvenform, also wie viel mehr laengere Bindungen kosten.
 """
 import json, urllib.request, datetime, sys, csv, io
 
-SPREAD = {5: 0.95, 10: 1.00, 15: 1.15, 20: 1.25}
-SOLL_ABSCHLAG = 0.07
+BASE_SPREAD = 0.59                                 # Aufschlag 10J-Rendite -> 10J-Bauzins (effektiv, 60 % Beleihung)
+TERM = {5: -0.02, 10: 0.00, 15: 0.24, 20: 0.37}    # Zu-/Abschlag je Bindung ggue. 10 Jahren
+SOLL_ABSCHLAG = 0.07                               # Sollzins = Effektivzins minus dieser Wert
 
-SERIES = {
-    5:  "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_5Y",
-    10: "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y",
-    15: "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_15Y",
-    20: "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_20Y",
-}
-BASE = "https://data-api.ecb.europa.eu/service/data/YC/{key}?lastNObservations=1&format=csvdata"
+# ECB Data Portal: Spot-Rendite der AAA-Euroraum-Zinskurve, 10 Jahre
+KEY_10Y = "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y"
+BASE_URL = "https://data-api.ecb.europa.eu/service/data/YC/{key}?lastNObservations=1&format=csvdata"
 MONATE = ["Januar","Februar","Maerz","April","Mai","Juni","Juli",
           "August","September","Oktober","November","Dezember"]
 
@@ -31,8 +33,8 @@ def parse_csv(text):
     last = rows[-1]
     return float(last["OBS_VALUE"]), last.get("TIME_PERIOD", "")
 
-def fetch_yield(key):
-    url = BASE.format(key=key)
+def fetch_yield_10y():
+    url = BASE_URL.format(key=KEY_10Y)
     req = urllib.request.Request(url, headers={"User-Agent": "finanzexperten-bauzins/1.0"})
     with urllib.request.urlopen(req, timeout=30) as r:
         text = r.read().decode("utf-8")
@@ -46,18 +48,17 @@ def stand_deutsch(iso):
     return "%d. %s %d" % (d.day, MONATE[d.month-1], d.year)
 
 def main():
-    base, datum_iso = {}, ""
-    for years, key in SERIES.items():
-        y, iso = fetch_yield(key)
-        if years == 10:
-            datum_iso = iso
-        eff = round(y + SPREAD[years], 2)
+    y10, iso = fetch_yield_10y()
+    eff10 = y10 + BASE_SPREAD
+    base = {}
+    for years, prem in TERM.items():
+        eff = round(eff10 + prem, 2)
         soll = round(eff - SOLL_ABSCHLAG, 2)
         base[str(years)] = {"soll": soll, "eff": eff}
-    out = {"stand": stand_deutsch(datum_iso), "live": True, "base": base}
+    out = {"stand": stand_deutsch(iso), "live": True, "base": base}
     with open("bauzinsen.json", "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
-    print("OK:", json.dumps(out, ensure_ascii=False))
+    print("OK (10J-Rendite %.2f%%):" % y10, json.dumps(out, ensure_ascii=False))
 
 if __name__ == "__main__":
     try:
