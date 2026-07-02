@@ -1,0 +1,27 @@
+name: Bauzinsen aktualisieren
+
+on:
+  schedule:
+    - cron: "0 6 * * *"      # taeglich 06:00 UTC (ca. 07:00/08:00 deutsche Zeit)
+  workflow_dispatch:          # erlaubt manuelles Starten per Knopfdruck
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository laden
+        uses: actions/checkout@v4
+
+      - name: Zinsen von der EZB abrufen
+        run: python3 update_zinsen.py
+
+      - name: Aktualisierte Datei speichern
+        run: |
+          git config user.name "bauzinsen-bot"
+          git config user.email "bauzinsen-bot@users.noreply.github.com"
+          git add bauzinsen.json
+          git commit -m "Bauzinsen automatisch aktualisiert" || echo "Keine Aenderung heute"
+          git push
