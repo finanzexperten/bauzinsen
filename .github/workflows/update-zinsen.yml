@@ -15,7 +15,7 @@ jobs:
       - name: Repository laden
         uses: actions/checkout@v4
 
-      - name: Zinsen von der EZB abrufen
+      - name: Zinsen von der Bundesbank abrufen
         run: python3 update_zinsen.py
 
       - name: Aktualisierte Datei speichern
