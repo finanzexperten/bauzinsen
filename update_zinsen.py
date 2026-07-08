@@ -1,58 +1,81 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Ruft die aktuelle EZB-Renditekurve (AAA-Staatsanleihen Euroraum, 10 Jahre) ab
-und rechnet daraus Richtwerte fuer Bauzinsen je Zinsbindung + eine taegliche
-Zins-Historie (~12 Monate) fuer den Verlaufs-Chart. Ergebnis: bauzinsen.json
-Nur Python-Standardbibliothek. Wird von GitHub Actions taeglich ausgefuehrt.
+Ruft die taegliche Renditekurve der DEUTSCHEN BUNDESBANK ab (Bund 10 Jahre,
+Svensson-Methode) und rechnet daraus Richtwerte fuer Bauzinsen je Zinsbindung
++ eine taegliche Zins-Historie (~10 Jahre) fuer den Verlaufs-Chart.
+Ergebnis: bauzinsen.json. Nur Python-Standardbibliothek.
+Wird von GitHub Actions taeglich ausgefuehrt.
 
-MODELL: Anker ist die 10-Jahres-Rendite. Effektiver Bauzins 10J = 10J-Rendite +
-BASE_SPREAD. Andere Bindungen bekommen einen festen Zu-/Abschlag (TERM). Die
-Historie enthaelt denselben 10J-Bauzins Tag fuer Tag (gleiche Basis wie die Kacheln).
+QUELLE: Bundesbank-Zeitreihe BBSIS.D.I.ZST.ZI.EUR.S1311.B.A604.R10XX.R.A.A._Z._Z.A
+(Zinsstruktur / boersennotierte Bundeswertpapiere / Restlaufzeit 10 Jahre / taeglich).
+Frischer und zuverlaessiger als die EZB-Kurve (i.d.R. Vortageswert).
+
+MODELL: Anker ist die 10-Jahres-Rendite der Bundesbank. Effektiver Bauzins 10J =
+10J-Rendite + BASE_SPREAD. Andere Bindungen bekommen einen festen Zu-/Abschlag
+(TERM). Die Historie enthaelt denselben 10J-Bauzins Tag fuer Tag.
 
 >>> STELLSCHRAUBEN FUER LAIEN <<<
 - BASE_SPREAD  : verschiebt ALLE Zinsen nach oben/unten (Euer Top-Zins-Niveau).
 - TERM         : Kurvenform, also wie viel mehr laengere Bindungen kosten.
-- HISTORY_N    : Anzahl Boersentage im Verlaufs-Chart (260 ~ 1 Jahr).
+- HISTORY_YEARS: Laenge der Zins-Historie im Chart (Jahre).
 """
-import json, urllib.request, datetime, sys, csv, io
+import json, urllib.request, datetime, sys
 
 BASE_SPREAD = 0.59
 TERM = {5: -0.02, 10: 0.00, 15: 0.24, 20: 0.37}
 SOLL_ABSCHLAG = 0.07
-HISTORY_N = 260
+HISTORY_YEARS = 10
 
-KEY_10Y = "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y"
-BASE_URL = "https://data-api.ecb.europa.eu/service/data/YC/{key}?lastNObservations={n}&format=csvdata"
-MONATE = ["Januar","Februar","Maerz","April","Mai","Juni","Juli",
-          "August","September","Oktober","November","Dezember"]
+TS_ID = "BBSIS.D.I.ZST.ZI.EUR.S1311.B.A604.R10XX.R.A.A._Z._Z.A"
+BASE_URL = ("https://www.bundesbank.de/statistic-rmi/StatisticDownload"
+            "?tsId={ts}&its_csvFormat=en&mode=its&its_fileFormat=csv&its_from={frm}")
+MONATE = ["Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli",
+          "August", "September", "Oktober", "November", "Dezember"]
 
-def fetch_series(n):
-    url = BASE_URL.format(key=KEY_10Y, n=n)
-    req = urllib.request.Request(url, headers={"User-Agent": "finanzexperten-bauzins/1.0"})
-    with urllib.request.urlopen(req, timeout=45) as r:
-        text = r.read().decode("utf-8")
-    rows = list(csv.DictReader(io.StringIO(text)))
+
+def is_date(s):
+    if len(s) != 10 or s[4] != "-" or s[7] != "-":
+        return False
+    return s[:4].isdigit() and s[5:7].isdigit() and s[8:10].isdigit()
+
+
+def fetch_series(years):
+    frm = (datetime.date.today() - datetime.timedelta(days=365 * years + 10)).isoformat()
+    url = BASE_URL.format(ts=TS_ID, frm=frm)
+    req = urllib.request.Request(url, headers={"User-Agent": "finanzexperten-bauzins/2.0"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        text = r.read().decode("utf-8-sig")
     out = []
-    for row in rows:
+    for line in text.splitlines():
+        cells = line.split(",")
+        if len(cells) < 2:
+            continue
+        d, v = cells[0].strip().strip('"'), cells[1].strip()
+        if not is_date(d):
+            continue          # ueberspringt Kopf-/Metazeilen
+        if v in ("", "."):
+            continue          # Wochenenden/Feiertage ohne Wert
         try:
-            out.append((row["TIME_PERIOD"], float(row["OBS_VALUE"])))
-        except Exception:
+            out.append((d, float(v)))
+        except ValueError:
             pass
     if not out:
-        raise ValueError("keine Datenpunkte")
+        raise ValueError("keine Datenpunkte von der Bundesbank erhalten")
     out.sort(key=lambda x: x[0])   # chronologisch
     return out
 
+
 def stand_deutsch(iso):
     try:
-        d = datetime.date.fromisoformat(iso)
-    except Exception:
-        d = datetime.date.today()
-    return "%d. %s %d" % (d.day, MONATE[d.month-1], d.year)
+        dt = datetime.date.fromisoformat(iso)
+    except ValueError:
+        dt = datetime.date.today()
+    return "%d. %s %d" % (dt.day, MONATE[dt.month - 1], dt.year)
+
 
 def main():
-    series = fetch_series(HISTORY_N)
+    series = fetch_series(HISTORY_YEARS)
     last_date, y10 = series[-1]
     eff10 = y10 + BASE_SPREAD
 
@@ -67,7 +90,9 @@ def main():
     out = {"stand": stand_deutsch(last_date), "live": True, "base": base, "history": history}
     with open("bauzinsen.json", "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
-    print("OK (10J-Rendite %.2f%%, %d Verlaufs-Punkte):" % (y10, len(history)), base)
+    print("OK (Bundesbank 10J-Rendite %.2f %% am %s, %d Verlaufs-Punkte):"
+          % (y10, last_date, len(history)), base)
+
 
 if __name__ == "__main__":
     try:
