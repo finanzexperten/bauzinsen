@@ -1,24 +1,24 @@
 {
-  "stand": "17. August 2026",
+  "stand": "18. August 2026",
   "live": true,
   "quelle": "Deutsche Bundesbank",
-  "quelleStand": "2026-08-17",
+  "quelleStand": "2026-08-18",
   "base": {
     "5": {
-      "soll": 3.76,
-      "eff": 3.83
+      "soll": 3.82,
+      "eff": 3.89
     },
     "10": {
-      "soll": 3.78,
-      "eff": 3.85
+      "soll": 3.84,
+      "eff": 3.91
     },
     "15": {
-      "soll": 4.02,
-      "eff": 4.09
+      "soll": 4.08,
+      "eff": 4.15
     },
     "20": {
-      "soll": 4.15,
-      "eff": 4.22
+      "soll": 4.21,
+      "eff": 4.28
     }
   },
   "history": [
@@ -7257,6 +7257,10 @@
     {
       "d": "2026-08-17",
       "v": 3.85
+    },
+    {
+      "d": "2026-08-18",
+      "v": 3.91
     }
   ]
 }
