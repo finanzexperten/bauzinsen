@@ -41,7 +41,14 @@ Nur Python-Standardbibliothek. Laeuft taeglich per GitHub Actions.
 
 import json, urllib.request, datetime, sys, statistics
 
-BASE_SPREAD     = 0.59
+# Marktabgleich 04.09.2026 (Rendite Bund 10 J = 3,40 %):
+#   MFI-Durchschnitt aller Neuabschluesse (Juli 2026)      3,92 %
+#   Vergleichsportale, Schlagzeilenzins 10 Jahre           3,69 - 3,74 %
+#   frueher hier: 0.59 -> 3,99 % und damit UEBER dem Marktdurchschnitt,
+#   obwohl 60 % Beleihung die gute Kondition sein soll.
+# 0.35 ergibt 3,75 % bei 60 % Beleihung: unter dem Durchschnitt, auf
+# Hoehe der Vergleichsportale, aber kein unrealistischer Lockzins.
+BASE_SPREAD     = 0.35
 TERM            = {5: -0.02, 10: 0.00, 15: 0.24, 20: 0.37}
 SOLL_ABSCHLAG   = 0.07
 HISTORY_YEARS   = 10
