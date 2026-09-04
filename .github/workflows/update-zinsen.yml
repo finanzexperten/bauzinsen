@@ -12,8 +12,9 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
+      # v5 statt v4: v4 laeuft auf Node.js 20, das GitHub abgekuendigt hat.
       - name: Repository laden
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Zinsen von der Bundesbank abrufen
         run: python3 update_zinsen.py
