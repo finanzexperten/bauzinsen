@@ -5,54 +5,72 @@ Erzeugt bauzinsen.json fuer den Bauzinsen-Rechner von finanzexperten.de.
 Nur Python-Standardbibliothek. Laeuft taeglich per GitHub Actions.
 
 =========================================================================
- ZWEI QUELLEN, ZWEI AUFGABEN
+ SO ENTSTEHEN DIE ZINSEN
 =========================================================================
- 1) HEUTIGES ZINSNIVEAU  ->  Bundesbank Zinsstrukturkurve, Bund 10 Jahre
-    (boersentaeglich, Svensson). Fallback: EZB AAA-Renditekurve.
-    Daraus entstehen die Kachelwerte je Zinsbindung.
+ Zwei Quellen der Deutschen Bundesbank:
 
- 2) HISTORISCHER VERLAUF ->  Bundesbank MFI-Zinsstatistik: Wohnungsbau-
-    kredite an private Haushalte, Neugeschaeft, Effektivzinssatz,
-    anfaengliche Zinsbindung ueber 10 Jahre (monatlich, Reihe SUD119).
+ 1) TAGESBEWEGUNG  ->  Zinsstrukturkurve, Bund 10 Jahre (boersentaeglich,
+    Svensson). Fallback: EZB AAA-Renditekurve.
+    Liefert, wie sich das Zinsniveau von Tag zu Tag bewegt.
 
- WARUM ZWEI QUELLEN?
- Der Abstand zwischen Bundrendite und tatsaechlichem Bauzins ist NICHT
- konstant. Im Maerz 2020 lag die Bundrendite bei rund -0,55 %, der reale
- Bauzins laut MFI-Statistik bei 1,18 % - ein Abstand von rund 1,7 Prozent-
- punkten. Heute liegt derselbe Abstand bei rund 0,6 Prozentpunkten.
- Die alte Version rechnete einen festen Aufschlag von BASE_SPREAD auf jede
- historische Bundrendite. Ergebnis waren Bauzinsen um 0 % und an 66 Tagen
- sogar negative Werte - die hat es nie gegeben.
+ 2) MARKTNIVEAU    ->  MFI-Zinsstatistik: Wohnungsbaukredite an private
+    Haushalte, Neugeschaeft, Effektivzinssatz, anfaengliche Zinsbindung
+    ueber 10 Jahre (monatlich, Reihe SUD119, rund 2 Monate Meldeverzug).
+    Liefert, wie weit der echte Bauzins ueber der Bundrendite liegt.
 
- Jetzt wird der Aufschlag Monat fuer Monat aus der MFI-Statistik GEMESSEN
- und anschliessend so verschoben, dass er im juengsten gemeinsamen Monat
- exakt BASE_SPREAD entspricht. Damit gilt beides:
-   - Das Kurvenende passt weiterhin exakt zum Kachelwert (10 J / 60 %).
-   - Der historische Verlauf bekommt die tatsaechliche Form.
+ Aus 2) wird Monat fuer Monat der Abstand gemessen:
+     Aufschlag(Monat) = MFI-Bauzins(Monat) - Bundrendite(Monatsmittel)
+ Dieser Abstand ist NICHT konstant: Maerz 2020 rund 1,7 Prozentpunkte,
+ heute rund 0,6. Wer ihn einfriert, zeigt fuer 2019-2021 Bauzinsen um
+ 0 % oder darunter - die hat es nie gegeben.
+
+ Unser eigener Zins ergibt sich daraus als:
+     unser Zins = Bundrendite + Aufschlag(Monat) + MARKT_VORSPRUNG
+
+ MARKT_VORSPRUNG ist die EINZIGE Zahl, die von Hand gepflegt wird, und
+ sie hat eine fachliche Bedeutung: Um wie viele Prozentpunkte liegen wir
+ besser als der Marktdurchschnitt aller Neuabschluesse?
+ Bewegt sich die Marge der Banken, wandert der gemessene Aufschlag mit -
+ die Anzeige folgt automatisch nach, mit rund zwei Monaten Verzug.
+ Frueher stand hier ein fester Aufschlag auf die Bundrendite. Der lief
+ unbemerkt vom Markt weg, sobald sich die Margen aenderten.
 
 =========================================================================
  STELLSCHRAUBEN
 =========================================================================
- BASE_SPREAD  : verschiebt ALLE Zinsen nach oben/unten (Euer Zinsniveau).
- TERM         : Aufschlag je Zinsbindung, relativ zu 10 Jahren.
- SOLL_ABSCHLAG: Abstand Effektivzins -> Sollzins.
- HISTORY_YEARS: Laenge der Historie in Jahren.
+ MARKT_VORSPRUNG : Abstand zum Marktdurchschnitt (negativ = wir sind
+                   guenstiger). Quartalsweise gegen die echte Partner-
+                   kondition pruefen.
+ TERM            : Aufschlag je Zinsbindung, relativ zu 10 Jahren.
+ SOLL_ABSCHLAG   : Abstand Effektivzins -> Sollzins.
+ HISTORY_YEARS   : Laenge der Historie in Jahren.
+ NOTFALL_SPREAD  : greift nur, wenn die MFI-Reihe nicht erreichbar ist.
+ MAX_SPRUNG      : Sicherung gegen Datenmuell, siehe unten.
 """
 
-import json, urllib.request, datetime, sys, statistics
+import json, os, urllib.request, datetime, sys, statistics
 
-# Marktabgleich 04.09.2026 (Rendite Bund 10 J = 3,40 %):
-#   MFI-Durchschnitt aller Neuabschluesse (Juli 2026)      3,92 %
-#   Vergleichsportale, Schlagzeilenzins 10 Jahre           3,69 - 3,74 %
-#   frueher hier: 0.59 -> 3,99 % und damit UEBER dem Marktdurchschnitt,
-#   obwohl 60 % Beleihung die gute Kondition sein soll.
-# 0.35 ergibt 3,75 % bei 60 % Beleihung: unter dem Durchschnitt, auf
-# Hoehe der Vergleichsportale, aber kein unrealistischer Lockzins.
-BASE_SPREAD     = 0.35
+# ---------------------------------------------------------------------
+# KALIBRIERUNG - Stand 04.09.2026
+#
+#   Referenz ist die Interhyp-Gruppe (unser Vertriebspartner):
+#     10 Jahre Zinsbindung, 60 % Beleihung  ->  3,85 % effektiv
+#   Marktdurchschnitt am selben Tag (MFI-Statistik, Juli 2026): 3,92 %
+#   -> wir liegen rund 0,13 Prozentpunkte besser als der Durchschnitt.
+#
+#   Diesen Wert quartalsweise gegen die echte Interhyp-Kondition pruefen.
+#   Rechenweg: MARKT_VORSPRUNG = Interhyp-Zins - (Bundrendite + Aufschlag)
+#   Beide Groessen stehen im Log jedes Laufs.
+#   Letzte Pruefung: 04.09.2026
+# ---------------------------------------------------------------------
+MARKT_VORSPRUNG = -0.13
+
 TERM            = {5: -0.02, 10: 0.00, 15: 0.24, 20: 0.37}
 SOLL_ABSCHLAG   = 0.07
 HISTORY_YEARS   = 10
-WARN_STALE_DAYS = 8       # aeltere Quelle -> Abbruch mit Fehler (Workflow wird rot)
+WARN_STALE_DAYS = 8      # aeltere Renditequelle -> Abbruch (Workflow wird rot)
+NOTFALL_SPREAD  = 0.45   # nur wenn die MFI-Reihe ausfaellt (Stand 04.09.2026)
+MAX_SPRUNG      = 0.30   # groesserer Tagessprung -> Abbruch, siehe pruefe_sprung()
 
 MONATE = ["Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli",
           "August", "September", "Oktober", "November", "Dezember"]
@@ -61,9 +79,9 @@ MONATE = ["Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli",
 API = "https://api.statistiken.bundesbank.de/rest/data/"
 SERIE_BUND = "BBSIS/D.I.ZST.ZI.EUR.S1311.B.A604.R10XX.R.A.A._Z._Z.A"
 SERIE_EZB  = "https://data-api.ecb.europa.eu/service/data/YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_10Y"
-# MFI-Zinsstatistik, Wohnungsbaukredite priv. HH, Neugeschaeft,
-# anfaengliche Zinsbindung ueber 10 Jahre, Effektivzins (= SUD119)
-SERIE_BAUFI = "BBIM1/M.DE.B.A2C.P.R.A.2250.EUR.N"
+SERIE_BAUFI = "BBIM1/M.DE.B.A2C.P.R.A.2250.EUR.N"   # = SUD119
+
+AUSGABE = "bauzinsen.json"
 
 
 # =========================================================================
@@ -71,13 +89,13 @@ SERIE_BAUFI = "BBIM1/M.DE.B.A2C.P.R.A.2250.EUR.N"
 # =========================================================================
 def _get(url):
     req = urllib.request.Request(
-        url, headers={"User-Agent": "finanzexperten-bauzins/4.0"})
+        url, headers={"User-Agent": "finanzexperten-bauzins/5.0"})
     with urllib.request.urlopen(req, timeout=60) as r:
         return r.read().decode("utf-8-sig")
 
 
 def _parse_sdmx(raw):
-    """SDMX-JSON -> Liste [(periode, wert)], aufsteigend, ohne Luecken-Nullen."""
+    """SDMX-JSON -> Liste [(periode, wert)], aufsteigend, ohne Luecken."""
     d = json.loads(raw)
     data = d.get("data", d)
     obs_dims = data["structure"]["dimensions"].get("observation") or []
@@ -110,10 +128,9 @@ def fetch_bundesbank(start_iso):
     WICHTIG: frueher wurde lastNObservations=HISTORY_YEARS*260 benutzt.
     Der Parameter zaehlt aber KALENDERTAGE, nicht Handelstage - aus 10
     angeforderten Jahren wurden dadurch nur rund 7,1 Jahre Historie.
-    startPeriod ist eindeutig und liefert genau den gewuenschten Zeitraum.
+    startPeriod ist eindeutig.
     """
-    url = API + SERIE_BUND + "?format=json&startPeriod=" + start_iso
-    s = _parse_sdmx(_get(url))
+    s = _parse_sdmx(_get(API + SERIE_BUND + "?format=json&startPeriod=" + start_iso))
     if not s:
         raise ValueError("Bundesbank-Renditekurve lieferte keine Werte")
     return s
@@ -121,8 +138,7 @@ def fetch_bundesbank(start_iso):
 
 def fetch_ecb(start_iso):
     """Fallback: EZB AAA-Renditekurve, 10-Jahres-Spot."""
-    url = SERIE_EZB + "?format=jsondata&startPeriod=" + start_iso
-    s = _parse_sdmx(_get(url))
+    s = _parse_sdmx(_get(SERIE_EZB + "?format=jsondata&startPeriod=" + start_iso))
     if not s:
         raise ValueError("EZB-Renditekurve lieferte keine Werte")
     return s
@@ -130,8 +146,7 @@ def fetch_ecb(start_iso):
 
 def fetch_baufi(start_iso):
     """Monatliche MFI-Effektivzinssaetze fuer Wohnungsbaukredite (>10 J)."""
-    url = API + SERIE_BAUFI + "?format=json&startPeriod=" + start_iso[:7]
-    s = _parse_sdmx(_get(url))
+    s = _parse_sdmx(_get(API + SERIE_BAUFI + "?format=json&startPeriod=" + start_iso[:7]))
     if not s:
         raise ValueError("MFI-Zinsstatistik lieferte keine Werte")
     return s
@@ -165,12 +180,11 @@ def _monatsmitte(monat):
 
 
 def spread_kurve(taeglich, baufi_monatlich):
-    """Misst den Abstand Bauzins minus Bundrendite je Monat.
+    """Misst je Monat: MFI-Bauzins minus Bundrendite (Monatsmittel).
 
-    Rueckgabe: (stuetzstellen, referenz) - stuetzstellen als
-    [(ordinal_der_monatsmitte, spread)], referenz = Spread des juengsten
-    gemeinsamen Monats. Dieser Referenzwert wird spaeter abgezogen, damit
-    heute genau BASE_SPREAD herauskommt.
+    Rueckgabe: (stuetzstellen, aktuell)
+      stuetzstellen = [(ordinal der Monatsmitte, aufschlag)]
+      aktuell       = Aufschlag des juengsten gemeinsamen Monats
     """
     bund_m = monatsmittel(taeglich)
     stuetz = []
@@ -180,11 +194,11 @@ def spread_kurve(taeglich, baufi_monatlich):
     if not stuetz:
         raise ValueError("Keine gemeinsamen Monate von Bund- und MFI-Reihe")
     stuetz.sort()
-    referenz = stuetz[-1][1]
-    print("Aufschlag gemessen: %d Monate, aeltester %s = %.2f pp, "
-          "juengster %s = %.2f pp (Referenz)"
-          % (len(stuetz), stuetz[0][2], stuetz[0][1], stuetz[-1][2], referenz))
-    return [(o, s) for o, s, _ in stuetz], referenz
+    aktuell = stuetz[-1][1]
+    print("Aufschlag gemessen: %d Monate | aeltester %s = %.2f pp | "
+          "juengster %s = %.2f pp"
+          % (len(stuetz), stuetz[0][2], stuetz[0][1], stuetz[-1][2], aktuell))
+    return [(o, s) for o, s, _ in stuetz], aktuell
 
 
 def spread_am_tag(stuetz, tag_ordinal):
@@ -207,19 +221,61 @@ def spread_am_tag(stuetz, tag_ordinal):
     return y0 + (y1 - y0) * (tag_ordinal - x0) / (x1 - x0)
 
 
-def baue_historie(taeglich, stuetz, referenz):
-    """history-Werte: Bundrendite + BASE_SPREAD + gemessene Aufschlagsdifferenz."""
+def baue_historie(taeglich, stuetz):
+    """unser Zins = Bundrendite + gemessener Aufschlag + MARKT_VORSPRUNG."""
     out = []
     for d, y in taeglich:
         o = datetime.date.fromisoformat(d).toordinal()
-        delta = spread_am_tag(stuetz, o) - referenz
-        out.append({"d": d, "v": round(y + BASE_SPREAD + TERM[10] + delta, 2)})
+        auf = spread_am_tag(stuetz, o)
+        out.append({"d": d, "v": round(y + auf + MARKT_VORSPRUNG + TERM[10], 2)})
     return out
 
 
-def baue_historie_konstant(taeglich):
-    """Rueckfallebene, wenn die MFI-Statistik nicht erreichbar ist."""
-    return [{"d": d, "v": round(y + BASE_SPREAD + TERM[10], 2)} for d, y in taeglich]
+def baue_historie_notfall(taeglich):
+    """Rueckfallebene: konstanter Aufschlag. Historisch zu niedrig!"""
+    return [{"d": d, "v": round(y + NOTFALL_SPREAD + TERM[10], 2)} for d, y in taeglich]
+
+
+# =========================================================================
+# Sicherungen
+# =========================================================================
+def pruefe_sprung(neu_eff10):
+    """Vergleicht mit der zuletzt veroeffentlichten Datei.
+
+    Ein Tagessprung ueber MAX_SPRUNG deutet auf Datenmuell hin (falsche
+    Reihe, Komma verrutscht, Quelle umgestellt). Dann lieber abbrechen als
+    Unsinn ausliefern. Mit '--force' bewusst uebergehen, z. B. wenn
+    MARKT_VORSPRUNG absichtlich stark geaendert wurde.
+    """
+    if not os.path.exists(AUSGABE):
+        return
+    try:
+        alt = json.load(open(AUSGABE, encoding="utf-8"))
+        alt_eff10 = float(alt["base"]["10"]["eff"])
+    except Exception as e:
+        print("Hinweis: alte %s nicht lesbar (%s) - Sprungpruefung entfaellt."
+              % (AUSGABE, e), file=sys.stderr)
+        return
+    diff = abs(neu_eff10 - alt_eff10)
+    if diff > MAX_SPRUNG and "--force" not in sys.argv:
+        raise SystemExit(
+            "ABBRUCH: Effektivzins 10 J springt von %.2f %% auf %.2f %% "
+            "(%.2f pp, erlaubt sind %.2f). Daten pruefen. Wenn gewollt: "
+            "Workflow mit '--force' starten."
+            % (alt_eff10, neu_eff10, diff, MAX_SPRUNG))
+    print("Sprungpruefung: %.2f %% -> %.2f %% (%.2f pp)" % (alt_eff10, neu_eff10, diff))
+
+
+def pruefe_historie(history, base):
+    negativ = [p for p in history if p["v"] < 0]
+    if negativ:
+        tief = min(negativ, key=lambda p: p["v"])
+        print("WARNUNG: %d Historienwerte unter 0 %% (Minimum %.2f %% am %s). "
+              "Bauzinsen waren nie negativ - Aufschlagsmodell pruefen."
+              % (len(negativ), tief["v"], tief["d"]), file=sys.stderr)
+    if abs(history[-1]["v"] - base["10"]["eff"]) > 0.01:
+        print("WARNUNG: Kurvenende (%.2f) weicht vom Kachelwert 10 J (%.2f) ab."
+              % (history[-1]["v"], base["10"]["eff"]), file=sys.stderr)
 
 
 # =========================================================================
@@ -235,64 +291,66 @@ def main():
     heute = datetime.date.today()
     start = (heute - datetime.timedelta(days=int(HISTORY_YEARS * 365.25))).isoformat()
 
-    # --- 1) Tagesreihe fuer das Zinsniveau ------------------------------
+    # --- 1) Tagesreihe --------------------------------------------------
     kandidaten = [c for c in (
         try_source("Bundesbank Bund 10J", fetch_bundesbank, start),
         try_source("EZB AAA-Renditekurve", fetch_ecb, start),
     ) if c]
     if not kandidaten:
-        raise SystemExit("Keine Renditequelle erreichbar - bauzinsen.json bleibt unveraendert.")
+        raise SystemExit("Keine Renditequelle erreichbar - %s bleibt unveraendert." % AUSGABE)
 
     name, taeglich = max(kandidaten, key=lambda c: c[1][-1][0])
     letzter_tag, y10 = taeglich[-1]
 
     alter = (heute - datetime.date.fromisoformat(letzter_tag)).days
     if alter > WARN_STALE_DAYS:
-        # Bewusst harter Abbruch: eine eingeschlafene Quelle darf nicht mit
-        # frischem "stand"-Datum ausgeliefert werden.
         raise SystemExit(
             "ABBRUCH: Frischeste Quelle (%s) ist %d Tage alt (Stand %s), erlaubt sind %d."
             % (name, alter, letzter_tag, WARN_STALE_DAYS))
 
-    # --- 2) Kachelwerte -------------------------------------------------
-    eff10 = y10 + BASE_SPREAD
+    # --- 2) Aufschlag messen --------------------------------------------
+    baufi = try_source("MFI-Zinsstatistik (SUD119)", fetch_baufi, start)
+    if baufi:
+        stuetz, aufschlag = spread_kurve(taeglich, baufi[1])
+        spread_heute = round(aufschlag + MARKT_VORSPRUNG, 4)
+        history      = baue_historie(taeglich, stuetz)
+        modell = ("Aufschlag monatlich aus der MFI-Zinsstatistik gemessen "
+                  "(Wohnungsbaukredite private Haushalte, Neugeschaeft, "
+                  "Zinsbindung ueber 10 Jahre), zzgl. unseres Vorsprungs "
+                  "von %.2f Prozentpunkten gegenueber dem Marktdurchschnitt"
+                  % MARKT_VORSPRUNG)
+        quelle_hist = "Deutsche Bundesbank: Renditekurve + MFI-Zinsstatistik"
+        hist_stand  = baufi[1][-1][0]
+        print("Marktdurchschnitt %s: Aufschlag %.2f pp | unser Vorsprung %.2f pp "
+              "| wirksamer Aufschlag %.2f pp"
+              % (hist_stand, aufschlag, MARKT_VORSPRUNG, spread_heute))
+    else:
+        print("WARNUNG: MFI-Statistik nicht erreichbar - Notfallwert %.2f pp, "
+              "Historie historisch zu niedrig." % NOTFALL_SPREAD, file=sys.stderr)
+        spread_heute = NOTFALL_SPREAD
+        history      = baue_historie_notfall(taeglich)
+        modell       = "Rueckfallebene: konstanter Aufschlag %.2f pp" % NOTFALL_SPREAD
+        quelle_hist  = name
+        hist_stand   = None
+
+    # --- 3) Kachelwerte -------------------------------------------------
+    eff10 = y10 + spread_heute
     base = {}
     for jahre, prem in TERM.items():
         eff = round(eff10 + prem, 2)
         base[str(jahre)] = {"soll": round(eff - SOLL_ABSCHLAG, 2), "eff": eff}
 
-    # --- 3) Historie mit gemessenem Aufschlag ---------------------------
-    baufi = try_source("MFI-Zinsstatistik (SUD119)", fetch_baufi, start)
-    if baufi:
-        stuetz, referenz = spread_kurve(taeglich, baufi[1])
-        history = baue_historie(taeglich, stuetz, referenz)
-        modell = ("Aufschlag je Monat aus der MFI-Zinsstatistik gemessen "
-                  "(Wohnungsbaukredite private Haushalte, Neugeschaeft, "
-                  "Zinsbindung ueber 10 Jahre) und auf das heutige Niveau kalibriert")
-        quelle_hist = "Deutsche Bundesbank: Renditekurve + MFI-Zinsstatistik"
-        hist_stand = baufi[1][-1][0]
-    else:
-        print("WARNUNG: MFI-Statistik nicht erreichbar - Historie mit konstantem "
-              "Aufschlag (historisch zu niedrig).", file=sys.stderr)
-        history = baue_historie_konstant(taeglich)
-        modell = "Rueckfallebene: konstanter Aufschlag auf die Renditekurve"
-        quelle_hist = name
-        hist_stand = None
-
-    # --- 4) Plausibilitaet ----------------------------------------------
-    negativ = [p for p in history if p["v"] < 0]
-    if negativ:
-        print("WARNUNG: %d Historienwerte unter 0 %% (Minimum %.2f %% am %s). "
-              "Bauzinsen waren nie negativ - Aufschlagsmodell pruefen."
-              % (len(negativ), min(p["v"] for p in negativ),
-                 min(negativ, key=lambda p: p["v"])["d"]), file=sys.stderr)
-    if abs(history[-1]["v"] - base["10"]["eff"]) > 0.01:
-        print("WARNUNG: Kurvenende (%.2f) weicht vom Kachelwert 10 J (%.2f) ab."
-              % (history[-1]["v"], base["10"]["eff"]), file=sys.stderr)
-
+    # --- 4) Sicherungen --------------------------------------------------
+    pruefe_sprung(base["10"]["eff"])
+    pruefe_historie(history, base)
     print("Historie: %d Tage, %s bis %s, Spanne %.2f bis %.2f %%"
           % (len(history), history[0]["d"], history[-1]["d"],
              min(p["v"] for p in history), max(p["v"] for p in history)))
+    print("Kacheln 60 %% Beleihung: " + " | ".join(
+        "%s J %.2f %%" % (j, base[j]["eff"]) for j in ("5", "10", "15", "20")))
+    print("ABGLEICH: Weicht der Wert fuer 10 Jahre von Eurer Partnerkondition ab, "
+          "MARKT_VORSPRUNG (aktuell %.2f) um genau die Differenz verschieben."
+          % MARKT_VORSPRUNG)
 
     # --- 5) Schreiben ----------------------------------------------------
     out = {
@@ -303,12 +361,14 @@ def main():
         "quelleHistorie": quelle_hist,
         "historieModell": modell,
         "historieStand": hist_stand,
+        "marktVorsprung": MARKT_VORSPRUNG,
+        "aufschlagGemessen": round(spread_heute, 2),
         "base": base,
         "history": history,
     }
-    with open("bauzinsen.json", "w", encoding="utf-8") as f:
+    with open(AUSGABE, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
-    print("bauzinsen.json geschrieben.")
+    print("%s geschrieben." % AUSGABE)
 
 
 if __name__ == "__main__":
