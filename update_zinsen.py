@@ -55,15 +55,24 @@ import json, os, urllib.request, datetime, sys, statistics
 #
 #   Referenz ist die Interhyp-Gruppe (unser Vertriebspartner):
 #     10 Jahre Zinsbindung, 60 % Beleihung  ->  3,85 % effektiv
-#   Marktdurchschnitt am selben Tag (MFI-Statistik, Juli 2026): 3,92 %
-#   -> wir liegen rund 0,13 Prozentpunkte besser als der Durchschnitt.
 #
-#   Diesen Wert quartalsweise gegen die echte Interhyp-Kondition pruefen.
-#   Rechenweg: MARKT_VORSPRUNG = Interhyp-Zins - (Bundrendite + Aufschlag)
+#   Gegengerechnet am echten Lauf vom 07.09.2026:
+#     Bundrendite 10 J                        3,41 %
+#     gemessener Aufschlag (MFI, Juli 2026)   0,77 pp
+#     Summe = rechnerischer Marktzins heute    4,18 %
+#     Interhyp                                 3,85 %
+#     -> MARKT_VORSPRUNG = 3,85 - 4,18 = -0,33
+#
+#   Wir liegen also rund 0,33 Prozentpunkte besser als der Durchschnitt
+#   aller Neuabschluesse. Das ist der typische Abstand zwischen einem
+#   Top-Angebot und dem Marktmittel ueber alle Beleihungen und Bonitaeten.
+#
+#   Quartalsweise gegen die echte Interhyp-Kondition pruefen:
+#   MARKT_VORSPRUNG = Interhyp-Zins - (Bundrendite + Aufschlag)
 #   Beide Groessen stehen im Log jedes Laufs.
-#   Letzte Pruefung: 04.09.2026
+#   Letzte Pruefung: 07.09.2026
 # ---------------------------------------------------------------------
-MARKT_VORSPRUNG = -0.13
+MARKT_VORSPRUNG = -0.33
 
 TERM            = {5: -0.02, 10: 0.00, 15: 0.24, 20: 0.37}
 SOLL_ABSCHLAG   = 0.07
