@@ -347,7 +347,7 @@ def main():
     base = {}
     for jahre, prem in TERM.items():
         eff = round(eff10 + prem, 2)
-        base[str(jahre)] = {"soll": round(eff - SOLL_ABSCHLAG, 2), "eff": eff}
+        base[str(jahre)] = {"soll": round(12 * ((1 + eff/100) ** (1/12) - 1) * 100, 2), "eff": eff}
 
     # --- 4) Sicherungen --------------------------------------------------
     pruefe_sprung(base["10"]["eff"])
