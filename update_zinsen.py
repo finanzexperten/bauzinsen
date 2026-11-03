@@ -19,7 +19,15 @@ Nur Python-Standardbibliothek. Laeuft taeglich per GitHub Actions.
     Liefert, wie weit der echte Bauzins ueber der Bundrendite liegt.
 
  Aus 2) wird Monat fuer Monat der Abstand gemessen:
-     Aufschlag(Monat) = MFI-Bauzins(Monat) - Bundrendite(Monatsmittel)
+     Aufschlag = MFI-Bauzins(Monat m) - Bundrendite(Monatsmittel m-1)
+ Der VORMONAT ist Absicht (Korrektur 03.11.2026): Die MFI-Statistik
+ erfasst Vertraege bei Abschluss, deren Zins aber meist Wochen vorher
+ zugesagt wurde. Sie laeuft der Bundrendite rund einen Monat hinterher.
+ Misst man gleichzeitig, schrumpft der Aufschlag scheinbar genau dann,
+ wenn die Zinsen steigen (Sept. 2026: 0,60 statt 0,88 pp) - der Rechner
+ zeigte Anfang November 3,65 % statt Marktniveau ueber 4 %.
+ Mit Vormonat lag der Aufschlag Feb.-Sept. 2026 stabil bei 0,85-0,92 pp,
+ gleichzeitig gemessen schwankte er zwischen 0,60 und 0,97 pp.
  Dieser Abstand ist NICHT konstant: Maerz 2020 rund 1,7 Prozentpunkte,
  heute rund 0,6. Wer ihn einfriert, zeigt fuer 2019-2021 Bauzinsen um
  0 % oder darunter - die hat es nie gegeben.
@@ -51,35 +59,46 @@ Nur Python-Standardbibliothek. Laeuft taeglich per GitHub Actions.
 import json, os, urllib.request, datetime, sys, statistics
 
 # ---------------------------------------------------------------------
-# KALIBRIERUNG - Stand 04.09.2026
+# KALIBRIERUNG - Stand 03.11.2026
 #
-#   Referenz ist die Interhyp-Gruppe (unser Vertriebspartner):
-#     10 Jahre Zinsbindung, 60 % Beleihung  ->  3,85 % effektiv
+#   Referenz bleibt die Interhyp-Gruppe (unser Vertriebspartner),
+#   10 Jahre Zinsbindung, Beleihung unter 70 %:
+#     Interhyp-Zinstabelle 26.10.-01.11.2026     4,13 % effektiv
+#   Gegenproben am selben Tag: baufivergleich.de 10 J/60 % 3,90 %,
+#   Dr. Klein Topzins 10 J (ca. 81 % Beleihung) 4,20 %,
+#   MFI-Marktmittel September 2026 4,13 %.
 #
-#   Gegengerechnet am echten Lauf vom 07.09.2026:
-#     Bundrendite 10 J                        3,41 %
-#     gemessener Aufschlag (MFI, Juli 2026)   0,77 pp
-#     Summe = rechnerischer Marktzins heute    4,18 %
-#     Interhyp                                 3,85 %
-#     -> MARKT_VORSPRUNG = 3,85 - 4,18 = -0,33
+#   Gegengerechnet mit Bundesbank-Daten vom 03.11.2026:
+#     Bundrendite 10 J (Zinsstrukturkurve)     3,38 %
+#     Aufschlag MFI Sept. - Bund-Mittel Aug.    0,88 pp
+#     Summe = rechnerischer Marktzins heute     4,26 %
+#     Interhyp                                  4,13 %
+#     -> 4,13 - 4,26 = -0,13, gerundet auf -0,15
 #
-#   Wir liegen also rund 0,33 Prozentpunkte besser als der Durchschnitt
-#   aller Neuabschluesse. Das ist der typische Abstand zwischen einem
-#   Top-Angebot und dem Marktmittel ueber alle Beleihungen und Bonitaeten.
+#   Historie: 04.09.2026 stand hier -0,33, gemessen gegen den damals
+#   gleichzeitigen (zu kleinen) Aufschlag. Dieser Wert passt nicht mehr
+#   zur Vormonats-Messung und darf NICHT zurueckgeholt werden.
 #
-#   Quartalsweise gegen die echte Interhyp-Kondition pruefen:
-#   MARKT_VORSPRUNG = Interhyp-Zins - (Bundrendite + Aufschlag)
+#   Quartalsweise gegen die echte Partnerkondition pruefen:
+#   MARKT_VORSPRUNG = Partnerzins - (Bundrendite + Aufschlag)
 #   Beide Groessen stehen im Log jedes Laufs.
-#   Letzte Pruefung: 07.09.2026
+#   Letzte Pruefung: 03.11.2026
 # ---------------------------------------------------------------------
-MARKT_VORSPRUNG = -0.33
+MARKT_VORSPRUNG = -0.15
 
-TERM            = {5: -0.02, 10: 0.00, 15: 0.24, 20: 0.37}
+# TERM nachgezogen 03.11.2026 an der Interhyp-Zinstabelle 26.10.-01.11.2026
+# (Abstand zu 10 J, Mittel der Spalten <70 % und 80 %): 5 J +0,04,
+# 15 J +0,19, 20 J +0,25. Vorher -0,02/0,24/0,37 -> 20 J lag 0,11 zu hoch.
+TERM            = {5: 0.04, 10: 0.00, 15: 0.19, 20: 0.25}
 SOLL_ABSCHLAG   = 0.07
 HISTORY_YEARS   = 10
 WARN_STALE_DAYS = 8      # aeltere Renditequelle -> Abbruch (Workflow wird rot)
-NOTFALL_SPREAD  = 0.45   # nur wenn die MFI-Reihe ausfaellt (Stand 04.09.2026)
+NOTFALL_SPREAD  = 0.73   # nur wenn die MFI-Reihe ausfaellt (= 0,88 - 0,15, Stand 03.11.2026)
 MAX_SPRUNG      = 0.30   # groesserer Tagessprung -> Abbruch, siehe pruefe_sprung()
+MFI_VERZUG      = 1      # MFI-Monat m wird gegen Bund-Mittel m-1 gemessen
+# Einmalige, selbst ablaufende Freigabe fuer die Korrektur vom 03.11.2026
+# (Sprung ca. 3,65 -> 4,1 %). Ab dem Folgetag greift MAX_SPRUNG wieder normal.
+SPRUNG_FREI_BIS = "2026-11-06"
 
 MONATE = ["Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli",
           "August", "September", "Oktober", "November", "Dezember"]
@@ -188,18 +207,32 @@ def _monatsmitte(monat):
     return datetime.date(j, m, 15).toordinal()
 
 
-def spread_kurve(taeglich, baufi_monatlich):
-    """Misst je Monat: MFI-Bauzins minus Bundrendite (Monatsmittel).
+def _vormonat(monat, n):
+    j, m = int(monat[:4]), int(monat[5:7]) - n
+    while m < 1:
+        j, m = j - 1, m + 12
+    return "%04d-%02d" % (j, m)
+
+
+def spread_kurve(taeglich, baufi_monatlich, verzug=None):
+    """Misst je Monat: MFI-Bauzins(m) minus Bundrendite(Monatsmittel m-verzug).
+
+    Die MFI-Zinsen laufen der Bundrendite rund einen Monat hinterher
+    (Zinszusage vor Vertragsabschluss). Der gemessene Aufschlag gehoert
+    deshalb zeitlich zum Bund-Monat und wird auch dort verankert.
 
     Rueckgabe: (stuetzstellen, aktuell)
-      stuetzstellen = [(ordinal der Monatsmitte, aufschlag)]
-      aktuell       = Aufschlag des juengsten gemeinsamen Monats
+      stuetzstellen = [(ordinal der Monatsmitte des Bund-Monats, aufschlag)]
+      aktuell       = Aufschlag des juengsten gemeinsamen Paares
     """
+    if verzug is None:
+        verzug = MFI_VERZUG
     bund_m = monatsmittel(taeglich)
     stuetz = []
     for monat, baufi in baufi_monatlich:
-        if monat in bund_m:
-            stuetz.append((_monatsmitte(monat), round(baufi - bund_m[monat], 4), monat))
+        bezug = _vormonat(monat, verzug)
+        if bezug in bund_m:
+            stuetz.append((_monatsmitte(bezug), round(baufi - bund_m[bezug], 4), monat))
     if not stuetz:
         raise ValueError("Keine gemeinsamen Monate von Bund- und MFI-Reihe")
     stuetz.sort()
@@ -266,7 +299,11 @@ def pruefe_sprung(neu_eff10):
               % (AUSGABE, e), file=sys.stderr)
         return
     diff = abs(neu_eff10 - alt_eff10)
-    if diff > MAX_SPRUNG and "--force" not in sys.argv:
+    frei = datetime.date.today().isoformat() <= SPRUNG_FREI_BIS
+    if diff > MAX_SPRUNG and frei:
+        print("HINWEIS: Sprung %.2f pp ueber MAX_SPRUNG, aber bewusst freigegeben "
+              "bis %s (Modellkorrektur)." % (diff, SPRUNG_FREI_BIS))
+    if diff > MAX_SPRUNG and "--force" not in sys.argv and not frei:
         raise SystemExit(
             "ABBRUCH: Effektivzins 10 J springt von %.2f %% auf %.2f %% "
             "(%.2f pp, erlaubt sind %.2f). Daten pruefen. Wenn gewollt: "
